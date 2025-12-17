@@ -1,0 +1,120 @@
+{
+    "queries": [
+        {
+            "id": "q1",
+            "query": "What is Optimization Inversion?",
+            "context": {
+                "energy": 80,
+                "regime": "standard"
+            },
+            "expected_topics": [
+                "infrastructure overhead",
+                "cost",
+                "utility",
+                "energy"
+            ]
+        },
+        {
+            "id": "q2",
+            "query": "How does the Landauer Penalty work?",
+            "context": {
+                "energy": 110,
+                "regime": "inversion"
+            },
+            "expected_topics": [
+                "penalty",
+                "amplification",
+                "cost metrics",
+                "sigmoid"
+            ]
+        },
+        {
+            "id": "q3",
+            "query": "What happens when energy exceeds the budget?",
+            "context": {
+                "energy": 120,
+                "regime": "inversion"
+            },
+            "expected_topics": [
+                "inversion regime",
+                "cost dominant",
+                "thermal runaway"
+            ]
+        },
+        {
+            "id": "q4",
+            "query": "How does TAO prevent thermal runaway?",
+            "context": {
+                "energy": 100,
+                "regime": "transition"
+            },
+            "expected_topics": [
+                "phase transition",
+                "reweight",
+                "cost-aware"
+            ]
+        },
+        {
+            "id": "q5",
+            "query": "Explain the 1% Fallacy",
+            "context": {
+                "energy": 60,
+                "regime": "standard"
+            },
+            "expected_topics": [
+                "inference",
+                "cooling",
+                "infrastructure",
+                "negligible"
+            ]
+        },
+        {
+            "id": "q6",
+            "query": "What EU AI Act articles does Instinct address?",
+            "context": {
+                "energy": 75,
+                "regime": "standard"
+            },
+            "expected_topics": [
+                "Article 53",
+                "Article 55",
+                "Annex XI",
+                "transparency",
+                "compliance"
+            ]
+        },
+        {
+            "id": "q7",
+            "query": "What is the energy budget threshold?",
+            "context": {
+                "energy": 100,
+                "regime": "transition"
+            },
+            "expected_topics": [
+                "100",
+                "joules",
+                "budget",
+                "threshold"
+            ]
+        },
+        {
+            "id": "q8",
+            "query": "How are Patch and Ignore plans scored?",
+            "context": {
+                "energy": 90,
+                "regime": "standard"
+            },
+            "expected_topics": [
+                "utility",
+                "cost",
+                "stability score",
+                "weighted"
+            ]
+        }
+    ],
+    "metadata": {
+        "created": "2025-12-17",
+        "version": "1.0",
+        "description": "Test queries for Instinct Platform TAO chat assistant evaluation"
+    }
+}

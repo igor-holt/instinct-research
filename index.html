@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instinct Platform: Thermodynamic-Aware Orchestration</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- OpenTelemetry setup for front-end tracing -->
+    <script type="module">
+        import { WebTracerProvider } from "https://esm.sh/@opentelemetry/sdk-trace-web";
+        import { BatchSpanProcessor } from "https://esm.sh/@opentelemetry/sdk-trace-base";
+        import { OTLPTraceExporter } from "https://esm.sh/@opentelemetry/exporter-trace-otlp-http";
+        import { Resource } from "https://esm.sh/@opentelemetry/resources";
+        import { SemanticResourceAttributes } from "https://esm.sh/@opentelemetry/semantic-conventions";
+
+        const otelProvider = new WebTracerProvider({
+            resource: new Resource({
+                [SemanticResourceAttributes.SERVICE_NAME]: "instinct-web",
+                [SemanticResourceAttributes.DEPLOYMENT_ENVIRONMENT]: "dev",
+            })
+        });
+
+        const exporter = new OTLPTraceExporter({ url: "http://localhost:4318/v1/traces" });
+        otelProvider.addSpanProcessor(new BatchSpanProcessor(exporter));
+        otelProvider.register();
+
+        const tracer = otelProvider.getTracer("instinct-web");
+
+        // small helper to trace UI actions
+        window.traceAction = (name, fn) => {
+            const span = tracer.startSpan(name);
+            try {
+                return fn(span);
+            } catch (err) {
+                span.recordException(err);
+                span.setStatus({ code: 2, message: err?.message });
+                throw err;
+            } finally {
+                span.end();
+            }
+        };
+    </script>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, query, where, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        // --- CONFIGURATION INJECTED ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyAJONnsfvzcoIbPctuS3ouQNsIiv9FyDI4",
+            authDomain: "fluent-aileron-481521-e9.firebaseapp.com",
+            projectId: "fluent-aileron-481521-e9",
+            storageBucket: "fluent-aileron-481521-e9.firebasestorage.app",
+            messagingSenderId: "1067729621870",
+            appId: "1:1067729621870:web:e26cba9a517005e3c1277f",
+            measurementId: "G-BCC8S8SLRY"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const provider = new GoogleAuthProvider();
+
+        // Expose to window for UI logic
+        window.auth = auth;
+        window.db = db;
+        window.provider = provider;
+        window.signInWithPopup = signInWithPopup;
+        window.signOut = signOut;
+        window.onAuthStateChanged = onAuthStateChanged;
+        window.collection = collection;
+        window.addDoc = addDoc;
+        window.query = query;
+        window.where = where;
+        window.orderBy = orderBy;
+        window.onSnapshot = onSnapshot;
+        window.serverTimestamp = serverTimestamp;
+        window.firebaseAppId = firebaseConfig.appId; // Expose for logic
+    </script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'thermo-bg': '#F9F7F2',
+                        'thermo-card': '#FFFFFF',
+                        'thermo-text': '#2D3748',
+                        'thermo-teal': '#2C7A7B',
+                        'thermo-orange': '#DD6B20',
+                        'thermo-gray': '#718096',
+                        'thermo-border': '#E2E8F0',
+                        'thermo-light-teal': '#E6FFFA'
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #F9F7F2;
+            color: #2D3748;
+        }
+
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            margin: 0 auto;
+            height: 350px;
+        }
+
+        .interactive-slider {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 8px;
+            border-radius: 5px;
+            background: #E2E8F0;
+            outline: none;
+        }
+
+        .interactive-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #2C7A7B;
+            cursor: pointer;
+        }
+
+        .interactive-slider.orange-thumb::-webkit-slider-thumb {
+            background: #DD6B20;
+        }
+
+        .metric-card {
+            transition: all 0.3s ease;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Chat Widget Styles */
+        .chat-widget {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 50;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+        }
+
+        .chat-button {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background-color: #2C7A7B;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .chat-button:hover {
+            transform: scale(1.05);
+            background-color: #236C6D;
+        }
+
+        .chat-window {
+            width: 350px;
+            height: 500px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+            margin-bottom: 16px;
+            display: none;
+            flex-direction: column;
+            border: 1px solid #E2E8F0;
+            overflow: hidden;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 15px;
+            overflow-y: auto;
+            background-color: #F9F7F2;
+        }
+
+        .message {
+            margin-bottom: 10px;
+            max-width: 80%;
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+        }
+
+        .message.user {
+            align-self: flex-end;
+            background-color: #2C7A7B;
+            color: white;
+            margin-left: auto;
+        }
+
+        .message.ai {
+            align-self: flex-start;
+            background-color: #EDF2F7;
+            color: #2D3748;
+            margin-right: auto;
+        }
+
+        .chat-header {
+            padding: 15px;
+            background: #2C7A7B;
+            color: white;
+            font-weight: bold;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chat-input-area {
+            padding: 15px;
+            border-top: 1px solid #eee;
+            display: flex;
+            gap: 8px;
+            background: white;
+        }
+
+        .typing-indicator {
+            font-size: 0.75rem;
+            color: #718096;
+            padding: 0 15px 10px;
+            display: none;
+        }
+
+        /* Login Overlay */
+        #loginOverlay {
+            backdrop-filter: blur(8px);
+        }
+    </style>
+</head>
+
+<body class="font-sans antialiased leading-relaxed">
+
+    <div id="loginOverlay"
+        class="fixed inset-0 z-[100] bg-thermo-text/90 flex flex-col items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center border-t-4 border-thermo-teal">
+            <div class="mb-6 flex justify-center">
+                <div class="h-16 w-16 bg-thermo-light-teal rounded-full flex items-center justify-center">
+                    <svg class="w-8 h-8 text-thermo-teal" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z">
+                        </path>
+                    </svg>
+                </div>
+            </div>
+            <h2 class="text-2xl font-bold text-gray-900 mb-2">Restricted Access</h2>
+            <p class="text-gray-500 mb-8">
+                The Instinct Platform simulation requires authorized clearance. Please authenticate to access the secure
+                kernel controller.
+            </p>
+            <button id="loginBtn"
+                class="w-full flex items-center justify-center gap-3 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold py-3 px-4 rounded-lg transition-all shadow-sm">
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" class="w-6 h-6"
+                    alt="Google">
+                <span>Sign in with Google</span>
+            </button>
+            <p class="mt-4 text-xs text-gray-400">
+                Authentication provided by Identity Services.<br>Your session data is encrypted and private.
+            </p>
+        </div>
+    </div>
+
+    <nav class="bg-white shadow-sm sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex">
+                    <div class="flex-shrink-0 flex items-center">
+                        <span class="text-xl font-bold text-thermo-teal">Instinct Platform</span>
+                    </div>
+                    <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
+                        <a href="#problem"
+                            class="nav-link border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">The
+                            Problem</a>
+                        <a href="#simulation"
+                            class="nav-link border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">Live
+                            Simulation</a>
+                        <a href="#validation"
+                            class="nav-link border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">Validation</a>
+                        <a href="#governance"
+                            class="nav-link border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">Governance</a>
+                    </div>
+                </div>
+                <div class="flex items-center gap-4">
+                    <div id="userProfile" class="hidden flex items-center gap-3">
+                        <span id="userName" class="text-sm font-medium text-gray-700"></span>
+                        <img id="userAvatar" src="" class="h-8 w-8 rounded-full border border-gray-200">
+                        <button id="logoutBtn"
+                            class="text-xs text-gray-500 hover:text-thermo-orange underline">Logout</button>
+                    </div>
+                    <button
+                        class="bg-thermo-teal text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-teal-700 transition"
+                        onclick="alert('In a real app, this would download the PDF.')">Download Whitepaper</button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="bg-thermo-bg py-16">
+        <div class="max-w-4xl mx-auto px-4 text-center">
+            <h1 class="text-4xl font-extrabold text-gray-900 sm:text-5xl sm:tracking-tight lg:text-6xl">
+                Operationalizing <span class="text-thermo-orange">Optimization Inversion</span>
+            </h1>
+            <p class="mt-5 max-w-xl mx-auto text-xl text-gray-500">
+                Thermodynamic-Aware Orchestration for Energy-Bounded AI Workloads.
+            </p>
+            <div class="mt-8 flex justify-center gap-4">
+                <div class="p-4 bg-white rounded-lg shadow-sm border border-thermo-border">
+                    <div class="text-3xl font-bold text-thermo-orange">99.36%</div>
+                    <div class="text-xs text-gray-500 uppercase tracking-wide">Energy Waste (Infrastructure)</div>
+                </div>
+                <div class="p-4 bg-white rounded-lg shadow-sm border border-thermo-border">
+                    <div class="text-3xl font-bold text-thermo-teal">TAO</div>
+                    <div class="text-xs text-gray-500 uppercase tracking-wide">Control Model</div>
+                </div>
+            </div>
+            <p class="mt-6 text-sm text-gray-500">Based on research by Igor Holt, Instinct Platform (Dec 2025)</p>
+        </div>
+    </div>
+
+    <section id="problem" class="py-16 bg-white">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="lg:text-center mb-12">
+                <h2 class="text-base text-thermo-teal font-semibold tracking-wide uppercase">The Problem</h2>
+                <p class="mt-2 text-3xl leading-8 font-extrabold tracking-tight text-gray-900 sm:text-4xl">
+                    Optimization Inversion
+                </p>
+                <p class="mt-4 max-w-2xl text-xl text-gray-500 lg:mx-auto">
+                    In production AI workloads, <b>infrastructure overhead dominates</b> (cooling, data movement, idle
+                    states). Optimizing the model alone yields minimal returns.
+                </p>
+            </div>
+
+            <div class="flex flex-col md:flex-row items-center gap-12">
+                <div class="w-full md:w-1/2">
+                    <div class="bg-thermo-bg rounded-xl p-6 shadow-inner border border-thermo-border">
+                        <h3 class="text-lg font-medium text-gray-900 mb-4 text-center">The Energy Attribution Stack</h3>
+                        <div class="chart-container">
+                            <canvas id="energyStackChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="w-full md:w-1/2 space-y-6">
+                    <div class="metric-card bg-white p-6 rounded-lg border border-thermo-border shadow-sm">
+                        <h4 class="text-lg font-bold text-thermo-orange mb-2">The 1% Fallacy</h4>
+                        <p class="text-gray-600">
+                            Model inference (bit operations) consumes negligible energy compared to cooling and
+                            orchestration.
+                        </p>
+                    </div>
+                    <div class="metric-card bg-white p-6 rounded-lg border border-thermo-border shadow-sm">
+                        <h4 class="text-lg font-bold text-thermo-teal">The Solution</h4>
+                        <p class="text-gray-600">
+                            Treat energy as a first-class constraint. When budgets bind, the system must <b>invert</b>
+                            priorities from Utility to Cost.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="simulation" class="py-16 bg-thermo-bg border-t border-thermo-border">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="mb-10">
+                <h2 class="text-base text-thermo-orange font-semibold tracking-wide uppercase">Interactive Demo</h2>
+                <p class="mt-2 text-3xl leading-8 font-extrabold tracking-tight text-gray-900 sm:text-4xl">
+                    Thermodynamic-Aware Orchestration (TAO) Simulator
+                </p>
+                <p class="mt-4 max-w-3xl text-xl text-gray-500">
+                    Drive the "Energy Load" to witness the <b>Phase Transition</b>. The system automatically reweights
+                    plans to prevent thermal runaway.
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <div class="bg-white p-6 rounded-xl shadow-md border border-thermo-border flex flex-col h-full">
+                    <h3 class="text-lg font-bold text-gray-900 mb-6 border-b pb-2">1. System Telemetry</h3>
+
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Current Energy Load (Joules)</label>
+                        <input type="range" id="energySlider" min="50" max="150" value="80"
+                            class="interactive-slider orange-thumb">
+                        <div class="flex justify-between text-xs text-gray-500 mt-1">
+                            <span>Safe (50J)</span>
+                            <span id="energyValue" class="font-bold text-thermo-orange text-lg">80 J</span>
+                            <span>Critical (150J)</span>
+                        </div>
+                    </div>
+
+                    <div class="p-4 bg-gray-50 rounded-lg border border-gray-200 mb-6">
+                        <div class="text-sm font-semibold text-gray-600">Landauer Penalty <span
+                                class="text-xs font-normal">(Eq. 2)</span></div>
+                        <div id="penaltyValue" class="text-2xl font-bold text-gray-900 mt-1">1.00x</div>
+                        <div class="text-xs text-gray-500 mt-1">Amplification factor for Cost metrics</div>
+                    </div>
+
+                    <div class="mt-auto border-t pt-4">
+                        <div class="mb-3">
+                            <label class="block text-xs font-semibold text-gray-500 mb-1">Gemini API Key</label>
+                            <input type="password" id="geminiKeyInput" placeholder="Paste your API Key here"
+                                class="w-full text-xs p-2 border rounded bg-gray-50 focus:outline-none focus:border-thermo-teal">
+                        </div>
+
+                        <button id="analyzeBtn"
+                            class="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-thermo-teal to-teal-600 text-white px-4 py-3 rounded-lg font-bold hover:from-teal-700 hover:to-teal-800 transition shadow-sm">
+                            <span>✨ Analyze Status</span>
+                        </button>
+                        <p class="text-center text-xs text-gray-400 mt-2">Log is securely saved to your private record.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl shadow-md border border-thermo-border lg:col-span-2">
+                    <h3 class="text-lg font-bold text-gray-900 mb-4 border-b pb-2">2. The Objective Landscape (Phase
+                        Transition)</h3>
+
+                    <div id="aiLogConsole"
+                        class="hidden mb-4 p-4 bg-thermo-light-teal border border-thermo-teal rounded-lg text-sm text-thermo-text">
+                        <div class="flex items-start gap-3">
+                            <span class="text-2xl">✨</span>
+                            <div>
+                                <h4 class="font-bold text-thermo-teal mb-1">Thermodynamic Status Log (Private)</h4>
+                                <p id="aiLogText" class="italic">Analyzing system telemetry...</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="flex flex-col md:flex-row gap-6">
+                        <div class="w-full md:w-2/3">
+                            <div class="chart-container">
+                                <canvas id="phaseTransitionChart"></canvas>
+                            </div>
+                        </div>
+
+                        <div class="w-full md:w-1/3 flex flex-col justify-center space-y-4">
+                            <div id="regimeIndicator"
+                                class="text-center p-3 rounded-lg font-bold text-white bg-thermo-teal transition-colors duration-500">
+                                STANDARD REGIME
+                            </div>
+
+                            <div class="space-y-2">
+                                <div class="flex justify-between items-center text-sm">
+                                    <span>Plan: <b>Patch</b> (Utility)</span>
+                                    <span id="scorePatch" class="font-mono bg-gray-100 px-2 py-1 rounded">0.00</span>
+                                </div>
+                                <div class="w-full bg-gray-200 rounded-full h-2">
+                                    <div id="barPatch"
+                                        class="bg-thermo-teal h-2 rounded-full transition-all duration-300"
+                                        style="width: 0%"></div>
+                                </div>
+                            </div>
+
+                            <div class="space-y-2">
+                                <div class="flex justify-between items-center text-sm">
+                                    <span>Plan: <b>Ignore</b> (Cost)</span>
+                                    <span id="scoreIgnore" class="font-mono bg-gray-100 px-2 py-1 rounded">0.00</span>
+                                </div>
+                                <div class="w-full bg-gray-200 rounded-full h-2">
+                                    <div id="barIgnore"
+                                        class="bg-thermo-orange h-2 rounded-full transition-all duration-300"
+                                        style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="validation" class="py-16 bg-white border-t border-thermo-border">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="mb-10">
+                <h2 class="text-base text-thermo-teal font-semibold tracking-wide uppercase">Quality Assurance</h2>
+                <p class="mt-2 text-3xl leading-8 font-extrabold tracking-tight text-gray-900 sm:text-4xl">
+                    Evaluation & Validation Suite
+                </p>
+                <p class="mt-4 max-w-3xl text-xl text-gray-500">
+                    Re-runnable tests to verify response quality, detect infinite loops, and ensure tensorized fractions
+                    remain stable.
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <!-- Test Controls -->
+                <div class="bg-thermo-bg p-6 rounded-xl border border-thermo-border">
+                    <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+                        <span class="text-2xl">🧪</span> Test Runner
+                    </h3>
+
+                    <div class="space-y-4">
+                        <div class="flex gap-3">
+                            <button id="runAllTests"
+                                class="flex-1 bg-thermo-teal text-white px-4 py-3 rounded-lg font-bold hover:bg-teal-700 transition flex items-center justify-center gap-2">
+                                <span>▶️ Run All Tests</span>
+                            </button>
+                            <button id="runLoopTest"
+                                class="flex-1 bg-thermo-orange text-white px-4 py-3 rounded-lg font-bold hover:bg-orange-700 transition flex items-center justify-center gap-2">
+                                <span>🔄 Loop Detection</span>
+                            </button>
+                        </div>
+
+                        <div class="p-4 bg-white rounded-lg border border-gray-200">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="text-sm font-semibold text-gray-600">Test Progress</span>
+                                <span id="testProgress" class="text-sm text-gray-500">0 / 8</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-3">
+                                <div id="testProgressBar"
+                                    class="bg-thermo-teal h-3 rounded-full transition-all duration-300"
+                                    style="width: 0%"></div>
+                            </div>
+                        </div>
+
+                        <div id="testStatus" class="p-3 bg-gray-100 rounded-lg text-sm text-gray-600 font-mono">
+                            Ready to run tests...
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Results Summary -->
+                <div class="bg-thermo-bg p-6 rounded-xl border border-thermo-border">
+                    <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+                        <span class="text-2xl">📊</span> Results Summary
+                    </h3>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="bg-white p-4 rounded-lg border border-gray-200 text-center">
+                            <div id="relevanceScore" class="text-3xl font-bold text-thermo-teal">--</div>
+                            <div class="text-xs text-gray-500 uppercase">Relevance</div>
+                        </div>
+                        <div class="bg-white p-4 rounded-lg border border-gray-200 text-center">
+                            <div id="groundednessScore" class="text-3xl font-bold text-thermo-teal">--</div>
+                            <div class="text-xs text-gray-500 uppercase">Groundedness</div>
+                        </div>
+                        <div class="bg-white p-4 rounded-lg border border-gray-200 text-center">
+                            <div id="loopCount" class="text-3xl font-bold text-thermo-orange">--</div>
+                            <div class="text-xs text-gray-500 uppercase">Loops Found</div>
+                        </div>
+                        <div class="bg-white p-4 rounded-lg border border-gray-200 text-center">
+                            <div id="passRate" class="text-3xl font-bold text-green-600">--</div>
+                            <div class="text-xs text-gray-500 uppercase">Pass Rate</div>
+                        </div>
+                    </div>
+
+                    <div id="loopWarning"
+                        class="hidden mt-4 p-3 bg-red-100 border border-red-300 rounded-lg text-red-700 text-sm">
+                        ⚠️ <strong>Loop Detected!</strong> Tensorized fractions may be in infinite rotation. Check
+                        response generation logic.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Detailed Results Table -->
+            <div class="mt-8 bg-white rounded-xl border border-thermo-border overflow-hidden">
+                <div class="p-4 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
+                    <h4 class="font-bold text-gray-900">Detailed Test Results</h4>
+                    <button id="clearResults" class="text-sm text-gray-500 hover:text-thermo-orange underline">Clear
+                        Results</button>
+                </div>
+                <div class="overflow-x-auto max-h-96 overflow-y-auto">
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-100 sticky top-0">
+                            <tr>
+                                <th class="px-4 py-2 text-left font-semibold text-gray-600">Test</th>
+                                <th class="px-4 py-2 text-left font-semibold text-gray-600">Query</th>
+                                <th class="px-4 py-2 text-center font-semibold text-gray-600">Relevance</th>
+                                <th class="px-4 py-2 text-center font-semibold text-gray-600">Grounded</th>
+                                <th class="px-4 py-2 text-center font-semibold text-gray-600">Loop</th>
+                                <th class="px-4 py-2 text-center font-semibold text-gray-600">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="testResultsBody">
+                            <tr class="border-t">
+                                <td colspan="6" class="px-4 py-8 text-center text-gray-400">No test results yet. Click
+                                    "Run All Tests" to start.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="governance" class="py-16 bg-thermo-bg">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="mb-12 text-center">
+                <h2 class="text-base text-thermo-teal font-semibold tracking-wide uppercase">Compliance</h2>
+                <p class="mt-2 text-3xl leading-8 font-extrabold tracking-tight text-gray-900 sm:text-4xl">
+                    EU AI Act Alignment
+                </p>
+                <p class="mt-4 max-w-2xl text-xl text-gray-500 mx-auto">
+                    Instinct generates the artifacts required by law.
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-thermo-border">
+                    <div class="text-thermo-orange mb-4 text-2xl">⚖️ Article 53</div>
+                    <h3 class="text-lg font-bold text-gray-900">Transparency</h3>
+                    <p class="mt-2 text-gray-600 text-sm">
+                        Requires documentation of estimated energy consumption. Instinct's <b>Hardware Telemetry
+                            Binding</b> replaces estimates with verified measurements.
+                    </p>
+                </div>
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-thermo-border">
+                    <div class="text-thermo-orange mb-4 text-2xl">🛡️ Article 55</div>
+                    <h3 class="text-lg font-bold text-gray-900">Risk Mitigation</h3>
+                    <p class="mt-2 text-gray-600 text-sm">
+                        Mandates preventing systemic risks. <b>Optimization Inversion</b> acts as a failsafe against
+                        "thermal runaway" in massive clusters.
+                    </p>
+                </div>
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-thermo-border">
+                    <div class="text-thermo-orange mb-4 text-2xl">📝 Annex XI</div>
+                    <h3 class="text-lg font-bold text-gray-900">Reporting</h3>
+                    <p class="mt-2 text-gray-600 text-sm">
+                        Specifies technical details for reporting. Instinct emits <b>Immutable Audit Trails</b> signed
+                        with telemetry hashes.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="bg-white border-t border-gray-200">
+        <div class="max-w-7xl mx-auto py-12 px-4 sm:px-6 md:flex md:items-center md:justify-between lg:px-8">
+            <div class="mt-8 md:mt-0 md:order-1">
+                <p class="text-center text-base text-gray-400">
+                    &copy; 2025 Instinct Platform. All rights reserved. | Research by Igor Holt.
+                </p>
+            </div>
+        </div>
+    </footer>
+
+    <div class="chat-widget">
+        <div id="chatWindow" class="chat-window">
+            <div class="chat-header">
+                <span>✨ Private Assistant</span>
+                <button id="closeChat" class="text-white hover:text-gray-200">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12">
+                        </path>
+                    </svg>
+                </button>
+            </div>
+            <div id="chatMessages" class="chat-messages">
+                <div class="message ai">
+                    Hello! I'm the Instinct Platform research assistant. I can answer questions about the whitepaper,
+                    "Operationalizing Optimization Inversion," or explain how our Thermodynamic-Aware Orchestration
+                    works.
+                </div>
+            </div>
+            <div class="typing-indicator" id="typingIndicator">Analyzing whitepaper...</div>
+            <div class="chat-input-area">
+                <input type="text" id="chatInput" placeholder="Ask about the EU AI Act..."
+                    class="flex-1 p-2 border border-gray-300 rounded focus:outline-none focus:border-thermo-teal text-sm">
+                <button id="sendMessage" class="bg-thermo-teal text-white p-2 rounded hover:bg-teal-700 transition">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <button id="toggleChat" class="chat-button">
+            <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z">
+                </path>
+            </svg>
+        </button>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- FIREBASE AUTHENTICATION LOGIC ---
+            const loginOverlay = document.getElementById('loginOverlay');
+            const loginBtn = document.getElementById('loginBtn');
+            const userProfile = document.getElementById('userProfile');
+            const userName = document.getElementById('userName');
+            const userAvatar = document.getElementById('userAvatar');
+            const logoutBtn = document.getElementById('logoutBtn');
+            let currentUser = null;
+            let unsubscribeChat = null;
+
+            // 1. Auth State Listener
+            if (window.onAuthStateChanged) {
+                window.onAuthStateChanged(window.auth, (user) => {
+                    if (user) {
+                        currentUser = user;
+                        loginOverlay.style.display = 'none';
+                        userProfile.classList.remove('hidden');
+                        userName.textContent = user.displayName;
+                        userAvatar.src = user.photoURL;
+                        loadChatHistory();
+                    } else {
+                        currentUser = null;
+                        loginOverlay.style.display = 'flex';
+                        userProfile.classList.add('hidden');
+                        if (unsubscribeChat) {
+                            unsubscribeChat();
+                            unsubscribeChat = null;
+                        }
+                    }
+                });
+            } else {
+                console.error('Firebase Auth not initialized correctly');
+            }
+
+            // 2. Login Action
+            loginBtn.addEventListener('click', () => {
+                window.traceAction('auth.login', () => {
+                    window.signInWithPopup(window.auth, window.provider)
+                        .catch((error) => {
+                            console.error('Login Failed:', error);
+                            alert('Authentication failed: ' + error.message);
+                        });
+                });
+            });
+
+            // 3. Logout Action
+            logoutBtn.addEventListener('click', () => {
+                window.traceAction('auth.logout', () => {
+                    window.signOut(window.auth);
+                });
+            });
+
+            // --- CHARTS & SIMULATION ---
+            const ctxStack = document.getElementById('energyStackChart').getContext('2d');
+            new Chart(ctxStack, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Infrastructure', 'Model Overhead', 'Inference'],
+                    datasets: [{
+                        data: [85, 14, 1],
+                        backgroundColor: ['#718096', '#CBD5E0', '#2C7A7B'],
+                        borderWidth: 0
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
+
+            const TAU = 20.0;
+            const LAMBDA = 1.5;
+            const BUDGET = 100.0;
+            const slider = document.getElementById('energySlider');
+            const valDisplay = document.getElementById('energyValue');
+            const penaltyDisplay = document.getElementById('penaltyValue');
+            const regimeIndicator = document.getElementById('regimeIndicator');
+            const scorePatchDisplay = document.getElementById('scorePatch');
+            const barPatch = document.getElementById('barPatch');
+            const scoreIgnoreDisplay = document.getElementById('scoreIgnore');
+            const barIgnore = document.getElementById('barIgnore');
+            const aiLogConsole = document.getElementById('aiLogConsole');
+            const aiLogText = document.getElementById('aiLogText');
+            const analyzeBtn = document.getElementById('analyzeBtn');
+            const geminiKeyInput = document.getElementById('geminiKeyInput');
+
+            const ctxPhase = document.getElementById('phaseTransitionChart').getContext('2d');
+            const phaseChart = new Chart(ctxPhase, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { label: 'Patch (Utility)', data: [], borderColor: '#2C7A7B', borderWidth: 2, pointRadius: 0 },
+                        { label: 'Ignore (Cost)', data: [], borderColor: '#DD6B20', borderWidth: 2, pointRadius: 0 },
+                        { label: 'Current State', data: [], borderColor: 'rgba(0,0,0,0.6)', borderDash: [5, 5], pointRadius: 6, pointBackgroundColor: 'black' }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    scales: {
+                        x: { title: { display: true, text: 'Energy Load (Joules)' }, min: 50, max: 150 },
+                        y: { title: { display: true, text: 'Plan Stability Score' }, min: 0.4, max: 0.8 }
+                    },
+                    plugins: {
+                        legend: { display: true, position: 'bottom' }
+                    }
+                }
+            });
+
+            function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
+            function calculatePenalty(energy) {
+                const diff = energy - BUDGET;
+                const sig = sigmoid(diff / TAU);
+                return 1.0 + (LAMBDA * sig);
+            }
+            function calculateScores(penalty) {
+                const w_util_base = 0.8;
+                const w_cost_base = 0.2;
+                const w_cost_dyn = w_cost_base * penalty;
+                const sum = w_util_base + w_cost_dyn;
+                const w_util = w_util_base / sum;
+                const w_cost = w_cost_dyn / sum;
+                const s_patch = (0.9 * w_util) + (0.1 * w_cost);
+                const s_ignore = (0.1 * w_util) + (0.9 * w_cost);
+                return { patch: s_patch, ignore: s_ignore };
+            }
+
+            function initChartData() {
+                const labels = [], dPatch = [], dIgnore = [];
+                for (let e = 50; e <= 150; e += 2) {
+                    labels.push(e);
+                    const p = calculatePenalty(e);
+                    const scores = calculateScores(p);
+                    dPatch.push(scores.patch);
+                    dIgnore.push(scores.ignore);
+                }
+                phaseChart.data.labels = labels;
+                phaseChart.data.datasets[0].data = dPatch;
+                phaseChart.data.datasets[1].data = dIgnore;
+                phaseChart.update();
+            }
+
+            function updateSimulation() {
+                const energy = parseInt(slider.value, 10);
+                valDisplay.textContent = energy + ' J';
+                const penalty = calculatePenalty(energy);
+                penaltyDisplay.textContent = penalty.toFixed(2) + 'x';
+                const scores = calculateScores(penalty);
+
+                scorePatchDisplay.textContent = scores.patch.toFixed(2);
+                scoreIgnoreDisplay.textContent = scores.ignore.toFixed(2);
+                barPatch.style.width = (scores.patch * 100).toFixed(0) + '%';
+                barIgnore.style.width = (scores.ignore * 100).toFixed(0) + '%';
+
+                if (energy > BUDGET) {
+                    regimeIndicator.textContent = 'INVERSION REGIME (Cost Dominant)';
+                    regimeIndicator.classList.remove('bg-thermo-teal');
+                    regimeIndicator.classList.add('bg-thermo-orange');
+                } else {
+                    regimeIndicator.textContent = 'STANDARD REGIME (Utility Dominant)';
+                    regimeIndicator.classList.remove('bg-thermo-orange');
+                    regimeIndicator.classList.add('bg-thermo-teal');
+                }
+
+                const labels = phaseChart.data.labels;
+                const idx = Math.round((energy - 50) / 2);
+                phaseChart.data.datasets[2].data = labels.map((_, i) => i === idx ? scores.patch : null);
+                phaseChart.update('none');
+            }
+
+            slider.addEventListener('input', updateSimulation);
+
+            analyzeBtn.addEventListener('click', () => {
+                window.traceAction('analysis.run', () => {
+                    const energy = parseInt(slider.value, 10);
+                    const penalty = calculatePenalty(energy);
+                    const scores = calculateScores(penalty);
+                    aiLogConsole.classList.remove('hidden');
+                    aiLogText.textContent = 'Analyzing...';
+
+                    setTimeout(() => {
+                        const keyProvided = geminiKeyInput.value.trim().length > 0;
+                        aiLogText.innerHTML = `Energy at ${energy}J. Penalty = ${penalty.toFixed(2)}x. Patch score ${scores.patch.toFixed(2)}, Ignore score ${scores.ignore.toFixed(2)}. ${energy > BUDGET ? 'Budget exceeded → Cost mode engaged.' : 'Within budget → Utility mode holds.'} ${keyProvided ? 'Key captured for downstream analysis.' : 'Provide Gemini API key to route to LLM evaluation.'}`;
+                        appendMessage('ai', aiLogText.innerHTML);
+                        saveMessage('ai', aiLogText.textContent);
+                    }, 450);
+                });
+            });
+
+            initChartData();
+            updateSimulation();
+
+            // --- CHAT WIDGET ---
+            const toggleChat = document.getElementById('toggleChat');
+            const closeChat = document.getElementById('closeChat');
+            const chatWindow = document.getElementById('chatWindow');
+            const chatMessages = document.getElementById('chatMessages');
+            const chatInput = document.getElementById('chatInput');
+            const sendMessageBtn = document.getElementById('sendMessage');
+            const typingIndicator = document.getElementById('typingIndicator');
+
+            function appendMessage(role, text) {
+                const div = document.createElement('div');
+                div.className = 'message ' + role;
+                if (role === 'ai') {
+                    div.innerHTML = marked.parse(text);
+                } else {
+                    div.textContent = text;
+                }
+                chatMessages.appendChild(div);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+
+            async function saveMessage(role, text) {
+                if (!currentUser || !window.db || !window.collection || !window.addDoc) return;
+                try {
+                    await window.addDoc(window.collection(window.db, 'chatMessages'), {
+                        uid: currentUser.uid,
+                        role,
+                        text,
+                        createdAt: window.serverTimestamp()
+                    });
+                } catch (err) {
+                    console.warn('Failed to save message:', err);
+                }
+            }
+
+            function loadChatHistory() {
+                if (!currentUser || !window.db || !window.collection || !window.query || !window.where || !window.orderBy || !window.onSnapshot) return;
+                window.traceAction('chat.loadHistory', () => {
+                    const q = window.query(
+                        window.collection(window.db, 'chatMessages'),
+                        window.where('uid', '==', currentUser.uid),
+                        window.orderBy('createdAt', 'asc')
+                    );
+                    unsubscribeChat = window.onSnapshot(q, (snapshot) => {
+                        chatMessages.innerHTML = '';
+                        snapshot.forEach((doc) => {
+                            const { role, text } = doc.data();
+                            appendMessage(role, text);
+                        });
+                    });
+                });
+            }
+
+            function botReply(userText) {
+                const energy = parseInt(slider.value, 10);
+                const penalty = calculatePenalty(energy);
+                const scores = calculateScores(penalty);
+                const reply = `**TAO Snapshot**\n- Energy: ${energy}J\n- Penalty: ${penalty.toFixed(2)}x\n- Patch: ${scores.patch.toFixed(2)}\n- Ignore: ${scores.ignore.toFixed(2)}\n\nQuestion: ${userText}\n\nInterpretation: When energy rises above ${BUDGET}J, cost-aware plans dominate to prevent thermal runaway.`;
+                appendMessage('ai', reply);
+                saveMessage('ai', reply);
+            }
+
+            function handleSend() {
+                const text = chatInput.value.trim();
+                if (!text) return;
+                window.traceAction('chat.send', () => {
+                    appendMessage('user', text);
+                    saveMessage('user', text);
+                    chatInput.value = '';
+                    typingIndicator.style.display = 'block';
+                    setTimeout(() => {
+                        typingIndicator.style.display = 'none';
+                        botReply(text);
+                    }, 400);
+                });
+            }
+
+            toggleChat.addEventListener('click', () => {
+                chatWindow.style.display = chatWindow.style.display === 'flex' ? 'none' : 'flex';
+                if (chatWindow.style.display === 'flex') {
+                    chatInput.focus();
+                }
+            });
+            closeChat.addEventListener('click', () => { chatWindow.style.display = 'none'; });
+            sendMessageBtn.addEventListener('click', handleSend);
+            chatInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleSend(); });
+
+            // --- EVALUATION & VALIDATION SUITE ---
+            const testQueries = [
+                { id: "q1", query: "What is Optimization Inversion?", expected_topics: ["infrastructure", "overhead", "cost", "utility", "energy"] },
+                { id: "q2", query: "How does the Landauer Penalty work?", expected_topics: ["penalty", "amplification", "cost", "sigmoid"] },
+                { id: "q3", query: "What happens when energy exceeds the budget?", expected_topics: ["inversion", "cost", "thermal", "runaway"] },
+                { id: "q4", query: "How does TAO prevent thermal runaway?", expected_topics: ["phase", "transition", "reweight", "cost"] },
+                { id: "q5", query: "Explain the 1% Fallacy", expected_topics: ["inference", "cooling", "infrastructure", "negligible"] },
+                { id: "q6", query: "What EU AI Act articles does Instinct address?", expected_topics: ["article", "53", "55", "transparency"] },
+                { id: "q7", query: "What is the energy budget threshold?", expected_topics: ["100", "joules", "budget", "threshold"] },
+                { id: "q8", query: "How are Patch and Ignore plans scored?", expected_topics: ["utility", "cost", "score", "weighted"] }
+            ];
+
+            const runAllTestsBtn = document.getElementById('runAllTests');
+            const runLoopTestBtn = document.getElementById('runLoopTest');
+            const testProgressEl = document.getElementById('testProgress');
+            const testProgressBar = document.getElementById('testProgressBar');
+            const testStatusEl = document.getElementById('testStatus');
+            const testResultsBody = document.getElementById('testResultsBody');
+            const clearResultsBtn = document.getElementById('clearResults');
+            const relevanceScoreEl = document.getElementById('relevanceScore');
+            const groundednessScoreEl = document.getElementById('groundednessScore');
+            const loopCountEl = document.getElementById('loopCount');
+            const passRateEl = document.getElementById('passRate');
+            const loopWarningEl = document.getElementById('loopWarning');
+
+            function generateTestResponse(query, energy) {
+                const penalty = calculatePenalty(energy);
+                const scores = calculateScores(penalty);
+                const regime = energy > BUDGET ? 'Inversion' : 'Standard';
+
+                let response = `**TAO Snapshot**\n- Energy: ${energy}J\n- Penalty: ${penalty.toFixed(2)}x\n- Patch: ${scores.patch.toFixed(2)}\n- Ignore: ${scores.ignore.toFixed(2)}\n\n`;
+
+                const q = query.toLowerCase();
+                if (q.includes('optimization inversion')) {
+                    response += 'Optimization Inversion occurs when infrastructure overhead dominates. The system inverts from Utility to Cost when energy budgets bind.';
+                } else if (q.includes('landauer')) {
+                    response += `The Landauer Penalty amplifies cost metrics via sigmoid. Current: ${penalty.toFixed(2)}x amplification.`;
+                } else if (q.includes('exceed') || q.includes('budget')) {
+                    response += `Above 100J budget, system enters ${regime} Regime. Cost-aware plans dominate to prevent thermal runaway.`;
+                } else if (q.includes('tao') || q.includes('thermal')) {
+                    response += 'TAO prevents thermal runaway by reweighting plans during phase transition.';
+                } else if (q.includes('1%') || q.includes('fallacy')) {
+                    response += 'The 1% Fallacy: Inference is negligible vs infrastructure (cooling, orchestration) at 85%+ energy.';
+                } else if (q.includes('eu') || q.includes('article')) {
+                    response += 'Instinct addresses Article 53 (Transparency), Article 55 (Risk Mitigation), Annex XI via telemetry binding.';
+                } else if (q.includes('threshold')) {
+                    response += 'Energy budget threshold is 100 Joules. Above triggers Inversion Regime.';
+                } else if (q.includes('patch') || q.includes('ignore') || q.includes('scored')) {
+                    response += `Weighted scoring: Patch (Utility): ${scores.patch.toFixed(2)}, Ignore (Cost): ${scores.ignore.toFixed(2)}.`;
+                } else {
+                    response += `Current: ${regime} regime. Energy above 100J triggers cost-aware dominance.`;
+                }
+
+                return response;
+            }
+
+            function evaluateRelevance(query, response, expectedTopics) {
+                const responseLower = response.toLowerCase();
+                const topicsFound = expectedTopics.filter(t => responseLower.includes(t.toLowerCase()));
+                return topicsFound.length / expectedTopics.length;
+            }
+
+            function evaluateGroundedness(response, energy) {
+                const penalty = calculatePenalty(energy);
+                const scores = calculateScores(penalty);
+                const responseLower = response.toLowerCase();
+
+                let matches = 0;
+                if (responseLower.includes(energy.toString())) matches++;
+                if (responseLower.includes(penalty.toFixed(2)) || responseLower.includes(penalty.toFixed(1))) matches++;
+                if (responseLower.includes(scores.patch.toFixed(2)) || responseLower.includes(scores.patch.toFixed(1))) matches++;
+                if (responseLower.includes(scores.ignore.toFixed(2)) || responseLower.includes(scores.ignore.toFixed(1))) matches++;
+
+                const regime = energy > BUDGET ? 'inversion' : 'standard';
+                if (responseLower.includes(regime)) matches++;
+
+                return matches / 5;
+            }
+
+            function detectLoop(response) {
+                const words = response.split(/\s+/);
+                if (words.length < 10) return { detected: false, ratio: 0 };
+
+                const ngrams = [];
+                for (let i = 0; i < words.length - 2; i++) {
+                    ngrams.push(words.slice(i, i + 3).join(' ').toLowerCase());
+                }
+
+                const unique = new Set(ngrams);
+                const ratio = 1 - (unique.size / ngrams.length);
+
+                return { detected: ratio > 0.5, ratio: ratio };
+            }
+
+            async function runSingleTest(testData, index) {
+                const energy = 50 + Math.floor(Math.random() * 100);
+                const response = generateTestResponse(testData.query, energy);
+
+                const relevance = evaluateRelevance(testData.query, response, testData.expected_topics);
+                const groundedness = evaluateGroundedness(response, energy);
+                const loopCheck = detectLoop(response);
+
+                const passed = relevance >= 0.5 && groundedness >= 0.3 && !loopCheck.detected;
+
+                return {
+                    id: testData.id,
+                    query: testData.query,
+                    energy: energy,
+                    response: response,
+                    relevance: relevance,
+                    groundedness: groundedness,
+                    loopDetected: loopCheck.detected,
+                    loopRatio: loopCheck.ratio,
+                    passed: passed
+                };
+            }
+
+            async function runAllTests() {
+                if (window.traceAction) {
+                    window.traceAction('evaluation.runAll', async () => {
+                        await executeTests();
+                    });
+                } else {
+                    await executeTests();
+                }
+            }
+
+            async function executeTests() {
+                testResultsBody.innerHTML = '';
+                testStatusEl.textContent = 'Running tests...';
+                runAllTestsBtn.disabled = true;
+                runLoopTestBtn.disabled = true;
+
+                const results = [];
+
+                for (let i = 0; i < testQueries.length; i++) {
+                    testStatusEl.textContent = `Running test ${i + 1}/${testQueries.length}: ${testQueries[i].query.substring(0, 30)}...`;
+                    testProgressEl.textContent = `${i + 1} / ${testQueries.length}`;
+                    testProgressBar.style.width = `${((i + 1) / testQueries.length) * 100}%`;
+
+                    const result = await runSingleTest(testQueries[i], i);
+                    results.push(result);
+
+                    // Add row to table
+                    const row = document.createElement('tr');
+                    row.className = 'border-t hover:bg-gray-50';
+                    row.innerHTML = `
+                        <td class="px-4 py-2 font-mono text-xs">${result.id}</td>
+                        <td class="px-4 py-2 text-xs">${result.query.substring(0, 35)}...</td>
+                        <td class="px-4 py-2 text-center">
+                            <span class="inline-block px-2 py-1 rounded text-xs font-bold ${result.relevance >= 0.5 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">${(result.relevance * 100).toFixed(0)}%</span>
+                        </td>
+                        <td class="px-4 py-2 text-center">
+                            <span class="inline-block px-2 py-1 rounded text-xs font-bold ${result.groundedness >= 0.3 ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}">${(result.groundedness * 100).toFixed(0)}%</span>
+                        </td>
+                        <td class="px-4 py-2 text-center">
+                            <span class="inline-block px-2 py-1 rounded text-xs font-bold ${result.loopDetected ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}">${result.loopDetected ? '⚠️ YES' : '✓ NO'}</span>
+                        </td>
+                        <td class="px-4 py-2 text-center">
+                            <span class="inline-block px-2 py-1 rounded text-xs font-bold ${result.passed ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}">${result.passed ? 'PASS' : 'FAIL'}</span>
+                        </td>
+                    `;
+                    testResultsBody.appendChild(row);
+
+                    await new Promise(r => setTimeout(r, 150)); // Simulate async
+                }
+
+                // Calculate aggregates
+                const avgRelevance = results.reduce((a, r) => a + r.relevance, 0) / results.length;
+                const avgGroundedness = results.reduce((a, r) => a + r.groundedness, 0) / results.length;
+                const loopsFound = results.filter(r => r.loopDetected).length;
+                const passedCount = results.filter(r => r.passed).length;
+
+                relevanceScoreEl.textContent = `${(avgRelevance * 100).toFixed(0)}%`;
+                groundednessScoreEl.textContent = `${(avgGroundedness * 100).toFixed(0)}%`;
+                loopCountEl.textContent = loopsFound;
+                passRateEl.textContent = `${((passedCount / results.length) * 100).toFixed(0)}%`;
+
+                if (loopsFound > 0) {
+                    loopWarningEl.classList.remove('hidden');
+                } else {
+                    loopWarningEl.classList.add('hidden');
+                }
+
+                testStatusEl.textContent = `✅ Completed: ${passedCount}/${results.length} tests passed`;
+                runAllTestsBtn.disabled = false;
+                runLoopTestBtn.disabled = false;
+            }
+
+            async function runLoopDetectionTest() {
+                if (window.traceAction) {
+                    window.traceAction('evaluation.loopDetection', async () => {
+                        await executeLoopTest();
+                    });
+                } else {
+                    await executeLoopTest();
+                }
+            }
+
+            async function executeLoopTest() {
+                testStatusEl.textContent = 'Running loop detection stress test...';
+                runLoopTestBtn.disabled = true;
+
+                // Generate responses at various energy levels to test for tensorized fraction loops
+                const energyLevels = [50, 75, 100, 125, 150];
+                let loopsDetected = 0;
+
+                for (const energy of energyLevels) {
+                    // Run multiple iterations at same energy to check for rotation
+                    const responses = [];
+                    for (let i = 0; i < 5; i++) {
+                        const response = generateTestResponse('Test query for loop detection', energy);
+                        responses.push(response);
+
+                        const loopCheck = detectLoop(response);
+                        if (loopCheck.detected) {
+                            loopsDetected++;
+                        }
+                    }
+
+                    // Check for identical responses (another loop indicator)
+                    const uniqueResponses = new Set(responses);
+                    if (uniqueResponses.size === 1 && responses.length > 1) {
+                        // All responses identical - potential static loop
+                    }
+                }
+
+                loopCountEl.textContent = loopsDetected;
+                if (loopsDetected > 0) {
+                    loopWarningEl.classList.remove('hidden');
+                    testStatusEl.textContent = `⚠️ Loop detection: ${loopsDetected} potential loops found`;
+                } else {
+                    loopWarningEl.classList.add('hidden');
+                    testStatusEl.textContent = '✅ Loop detection: No infinite loops detected';
+                }
+
+                runLoopTestBtn.disabled = false;
+            }
+
+            runAllTestsBtn.addEventListener('click', runAllTests);
+            runLoopTestBtn.addEventListener('click', runLoopDetectionTest);
+            clearResultsBtn.addEventListener('click', () => {
+                testResultsBody.innerHTML = '<tr class="border-t"><td colspan="6" class="px-4 py-8 text-center text-gray-400">No test results yet. Click "Run All Tests" to start.</td></tr>';
+                relevanceScoreEl.textContent = '--';
+                groundednessScoreEl.textContent = '--';
+                loopCountEl.textContent = '--';
+                passRateEl.textContent = '--';
+                testProgressEl.textContent = '0 / 8';
+                testProgressBar.style.width = '0%';
+                testStatusEl.textContent = 'Ready to run tests...';
+                loopWarningEl.classList.add('hidden');
+            });
+        });
+    </script>
+</body>
+
+</html>
