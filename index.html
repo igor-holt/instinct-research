@@ -30,7 +30,7 @@
 
         const tracer = otelProvider.getTracer("instinct-web");
 
-        // small helper to trace UI actions
+        // small helper to trace UI actions (with fallback if tracing not loaded)
         window.traceAction = (name, fn) => {
             const span = tracer.startSpan(name);
             try {
@@ -43,6 +43,13 @@
                 span.end();
             }
         };
+    </script>
+
+    <!-- Fallback traceAction if OpenTelemetry fails to load -->
+    <script>
+        if (!window.traceAction) {
+            window.traceAction = (name, fn) => fn();
+        }
     </script>
 
     <script type="module">
@@ -702,6 +709,25 @@
     </div>
 
     <script>
+        // Wait for both DOM and Firebase modules to load
+        function waitForFirebase(callback, maxAttempts = 50) {
+            let attempts = 0;
+            const check = () => {
+                attempts++;
+                if (window.auth && window.signInWithPopup && window.onAuthStateChanged) {
+                    callback();
+                } else if (attempts < maxAttempts) {
+                    setTimeout(check, 100);
+                } else {
+                    console.error('Firebase failed to load after ' + maxAttempts + ' attempts');
+                    // Hide overlay anyway so user can see content
+                    const overlay = document.getElementById('loginOverlay');
+                    if (overlay) overlay.style.display = 'none';
+                }
+            };
+            check();
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
             // --- FIREBASE AUTHENTICATION LOGIC ---
             const loginOverlay = document.getElementById('loginOverlay');
@@ -713,8 +739,11 @@
             let currentUser = null;
             let unsubscribeChat = null;
 
-            // 1. Auth State Listener
-            if (window.onAuthStateChanged) {
+            // Wait for Firebase to be ready before setting up auth
+            waitForFirebase(() => {
+                console.log('Firebase loaded successfully');
+
+                // 1. Auth State Listener
                 window.onAuthStateChanged(window.auth, (user) => {
                     if (user) {
                         currentUser = user;
@@ -733,27 +762,25 @@
                         }
                     }
                 });
-            } else {
-                console.error('Firebase Auth not initialized correctly');
-            }
 
-            // 2. Login Action
-            loginBtn.addEventListener('click', () => {
-                window.traceAction('auth.login', () => {
-                    window.signInWithPopup(window.auth, window.provider)
-                        .catch((error) => {
-                            console.error('Login Failed:', error);
-                            alert('Authentication failed: ' + error.message);
-                        });
+                // 2. Login Action
+                loginBtn.addEventListener('click', () => {
+                    window.traceAction('auth.login', () => {
+                        window.signInWithPopup(window.auth, window.provider)
+                            .catch((error) => {
+                                console.error('Login Failed:', error);
+                                alert('Authentication failed: ' + error.message);
+                            });
+                    });
                 });
-            });
 
-            // 3. Logout Action
-            logoutBtn.addEventListener('click', () => {
-                window.traceAction('auth.logout', () => {
-                    window.signOut(window.auth);
+                // 3. Logout Action
+                logoutBtn.addEventListener('click', () => {
+                    window.traceAction('auth.logout', () => {
+                        window.signOut(window.auth);
+                    });
                 });
-            });
+            }); // end waitForFirebase
 
             // --- CHARTS & SIMULATION ---
             const ctxStack = document.getElementById('energyStackChart').getContext('2d');
