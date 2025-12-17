@@ -769,7 +769,14 @@
                         window.signInWithPopup(window.auth, window.provider)
                             .catch((error) => {
                                 console.error('Login Failed:', error);
-                                alert('Authentication failed: ' + error.message);
+                                // If Firebase auth fails, offer demo mode
+                                if (confirm('Authentication service unavailable.\n\nWould you like to continue in Demo Mode?\n(Chat history will not be saved)')) {
+                                    currentUser = { displayName: 'Demo User', photoURL: 'https://ui-avatars.com/api/?name=Demo+User&background=2C7A7B&color=fff', uid: 'demo-user' };
+                                    loginOverlay.style.display = 'none';
+                                    userProfile.classList.remove('hidden');
+                                    userName.textContent = currentUser.displayName;
+                                    userAvatar.src = currentUser.photoURL;
+                                }
                             });
                     });
                 });
